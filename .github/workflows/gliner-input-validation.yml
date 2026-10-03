@@ -1,0 +1,46 @@
+name: GLiNER2 input validation
+on:
+  push:
+    branches: [test/gliner2-invalid-input-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
+        with:
+          version: 2026.5.5
+          install_args: --jobs=1
+          cache: false
+      - run: mise tasks
+      - run: mise exec -- uv lock --check --project .
+      - run: mise exec -- uv sync --frozen --project . --all-packages --no-install-package sie-audio-prep
+      - name: Verify original and repaired request behavior
+        run: mise exec -- uv run --frozen --project . --no-sync python tools/ci/gliner_input_regression.py
+      - run: mise run lint
+      - run: mise run typecheck
+      - name: Related adapter, queue and HTTP tests
+        run: >-
+          mise exec -- uv run --frozen --project . --no-sync pytest -q
+          packages/sie_server/tests/adapters/test_gliner2*.py
+          packages/sie_server/tests/test_queue_executor.py
+          packages/sie_server/tests/api/test_extract.py
+          packages/sie_server/tests/api/test_error_code_hygiene.py
+          packages/sie_server/tests/core/worker
+      - name: Full unit suite
+        run: mise run test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gliner-input-results
+          path: gliner-input-results/
