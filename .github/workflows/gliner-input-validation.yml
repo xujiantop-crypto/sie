@@ -1,0 +1,45 @@
+name: GLiNER2 complete-text validation
+on:
+  push:
+    branches: [test/gliner2-long-input-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
+        with:
+          version: 2026.5.5
+          install_args: --jobs=1
+          cache: false
+      - run: mise tasks
+      - run: mise exec -- uv lock --check --project .
+      - run: mise exec -- uv sync --frozen --project . --all-packages --no-install-package sie-audio-prep
+      - name: Require the real pinned processor
+        run: >-
+          mise exec -- uv run --frozen --project . --no-sync python -c
+          'import gliner2.processor, gliner2.inference.engine; import importlib.metadata as m; assert m.version("gliner2") == "1.3.2"'
+      - run: mise run lint
+      - run: mise run typecheck
+      - name: Adapter, queue and HTTP regressions
+        run: >-
+          mise exec -- uv run --frozen --project . --no-sync pytest -q
+          packages/sie_server/tests/adapters/test_gliner2*.py
+          packages/sie_server/tests/adapters/test_word_window.py
+          packages/sie_server/tests/test_queue_executor.py
+          packages/sie_server/tests/test_queue_executor_stage1d.py
+          packages/sie_server/tests/api/test_extract.py
+          packages/sie_server/tests/api/test_error_code_hygiene.py
+          packages/sie_server/tests/core/worker
+      - name: Full public Python unit suite
+        run: mise run test
