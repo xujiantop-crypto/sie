@@ -1,0 +1,57 @@
+name: Embedding token usage validation
+on:
+  push:
+    branches: [test/embeddings-token-usage-current-main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
+        with:
+          version: 2026.5.5
+          install_args: --jobs=1
+          cache: false
+      - run: mise tasks
+      - run: mise exec -- uv lock --check --project .
+      - run: mise exec -- uv sync --frozen --project . --all-packages --no-install-package sie-audio-prep
+      - name: Regenerate the server schema
+        run: |
+          mise run openapi -- --server-only
+          git diff --exit-code -- packages/sie_server/openapi.json
+      - name: Reproduce the route regression on the exact default source
+        shell: bash
+        run: |
+          source_file=packages/sie_server/src/sie_server/api/openai_compat.py
+          cp "$source_file" /tmp/openai-compat-fixed.py
+          trap 'cp /tmp/openai-compat-fixed.py "$source_file"' EXIT
+          git show 6e5ce3d5dc6e11bfd48f06d11bf16be8d72c3ce2:"$source_file" > "$source_file"
+          set +e
+          mise exec -- uv run --frozen --project . --no-sync pytest -q packages/sie_server/tests/api/test_openai_compat.py -k test_usage_reports_worker_counts_or_labels_the_estimate > /tmp/embeddings-baseline.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/embeddings-baseline.log
+          test "$result" = 1
+          grep -q '8 failed, 31 deselected' /tmp/embeddings-baseline.log
+      - name: Route and metering regressions
+        run: >-
+          mise exec -- uv run --frozen --project . --no-sync pytest -q
+          packages/sie_server/tests/api/test_openai_compat.py
+          packages/sie_server/tests/test_metering_units.py
+      - run: mise run lint
+      - run: mise run typecheck
+      - run: mise exec -- python tools/check_ipc_types_parity.py
+      - run: mise exec -- python tools/check_response_chunk_protocol.py
+      - run: tests/parity/run_parity.sh
+      - name: Full public Python unit suite
+        run: mise run test
