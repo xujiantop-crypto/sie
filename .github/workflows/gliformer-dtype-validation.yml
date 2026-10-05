@@ -1,0 +1,54 @@
+name: GLiFormer dtype validation
+on:
+  push:
+    branches: [test/gliformer-probe-dtype-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
+        with:
+          version: 2026.5.5
+          install_args: --jobs=1
+          cache: false
+      - run: mise tasks
+      - run: mise exec -- uv lock --check --project .
+      - run: mise exec -- uv sync --frozen --project . --all-packages --no-install-package sie-audio-prep
+      - name: Require the pinned real GLiFormer package
+        run: >-
+          mise exec -- uv run --frozen --project . --no-sync python -c
+          'import gliformer, gliner; import importlib.metadata as m; assert m.version("gliformer") == "0.1.2"; print("gliformer", m.version("gliformer"), "gliner", m.version("gliner"), "torch", m.version("torch"))'
+      - name: Reproduce float64 mismatch on the exact upstream source
+        shell: bash
+        run: |
+          adapter=packages/sie_server/src/sie_server/adapters/gliformer/adapter.py
+          cp "$adapter" /tmp/gliformer-fixed-adapter.py
+          trap 'cp /tmp/gliformer-fixed-adapter.py "$adapter"' EXIT
+          git show 72641933c2d822ec2f38ea4c398bc08eeb3e3be3:"$adapter" > "$adapter"
+          set +e
+          mise exec -- uv run --frozen --project . --no-sync pytest -q packages/sie_server/tests/adapters/test_gliformer_span_decoding.py -k test_replacements_are_verified_against_the_package_at_load > /tmp/gliformer-baseline.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/gliformer-baseline.log
+          test "$result" = 1
+          grep -q '1 failed, 1 passed' /tmp/gliformer-baseline.log
+          grep -q 'no longer matches its bounded replacement' /tmp/gliformer-baseline.log
+      - name: All GLiFormer adapter and decoder regressions
+        run: >-
+          mise exec -- uv run --frozen --project . --no-sync pytest -q
+          packages/sie_server/tests/adapters/test_gliformer*.py
+      - run: mise run lint
+      - run: mise run typecheck
+      - name: Full public Python unit suite
+        run: mise run test
